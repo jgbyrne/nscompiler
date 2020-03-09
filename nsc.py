@@ -1,6 +1,8 @@
 from enum import Enum
 import sys
 
+sys.stderr = sys.stdout
+
 def err_fatal(lno, msg):
     if not lno:
         print("Error: {}".format(msg), file=sys.stderr)
@@ -49,6 +51,10 @@ class Manifest:
                         man.formula[1] = lno-1
                     exp_form = False
                     lval, rval = parts
+
+                    if lval in seen:
+                        err_fatal(lno, "Duplicate label name")
+
                     seen.add(lval)
                     if lval == "variables":
                         man.vars = (lno, chunk(rval))
@@ -62,17 +68,19 @@ class Manifest:
                             for i, c in enumerate(spec):
                                 if pname is not None and bptr == -1:
                                     if c == ']':
-                                        pass # err
+                                        err_fatal(lno, "Predicate definition '{}' has no arity specified".format(pname))
                                     bptr = i
                                 if c == '[':
                                     pname = spec[:i]
                             if c != ']':
-                                pass # err
+                                err_fatal(lno, "Predicate definition did not conclude with ']'")
                             if bptr != -1:
                                 try:
                                     preds[pname] = int(spec[bptr:-1])
-                                except IndexError:
-                                    pass # err
+                                    if preds[pname] < 0:
+                                        err_fatal(lno, "Predicate definition arity is not positive")
+                                except ValueError:
+                                    err_fatal(lno, "Predicate definition arity is not an integer")
                         man.preds = (lno, preds)
                     elif lval == "equality":
                         man.eq = (lno, rval.strip())
@@ -166,10 +174,11 @@ class Tokeniser:
                 elif c == ')':
                     sym_t = Symbol.RPAREN
                     break
-                elif c.isalnum or c == '_' or c == '\\' or c == '=':
+                elif c.isalnum() or c == '_' or c == '\\' or c == '=':
                     rptr += 1
                     continue
-                # ERR
+                else:
+                    err_fatal(0, "'{}' is not a valid character in any identifier".format(c))
 
             if lptr != rptr:
                 v = source[lptr:rptr]
@@ -185,6 +194,8 @@ class Tokeniser:
                     t = Connective(self.man.conns[1].index(v))
                 elif v in self.man.quants[1]:
                     t = Quantifier(self.man.quants[1].index(v))
+                else:
+                    err_fatal(0, "No such identifier ''".format(v))
                 self.toks.append(Token(t, v, lptr, rptr-1))
                 lptr = rptr
 
@@ -389,5 +400,5 @@ if __name__ == "__main__":
     tkr.tokenise()
     psr = Parser(tkr)
     tree = psr.parse()
-    print(tree)
+    print("Parsed Successfully")
 
