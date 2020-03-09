@@ -1,7 +1,7 @@
 from enum import Enum
 import sys
 
-def error(lno, msg):
+def err_fatal(lno, msg):
     if not lno:
         print("Error: {}".format(msg), file=sys.stderr)
     else:
@@ -84,15 +84,15 @@ class Manifest:
                         man.formula = [lno, -1, rval]
                         exp_form = True
                     else:
-                        error(lno, "Unrecognised label name")
+                        err_fatal(lno, "Unrecognised label name")
                 elif exp_form:
                     man.formula[2] += line
                 else:
-                    error(lno, "Unrecognised input syntax")
+                    err_fatal(lno, "Unrecognised input syntax")
         if exp_form:
             man.formula[1] = lno
         if seen != expect:
-            error(0, "Did not see expected label set")
+            err_fatal(0, "Did not see expected label set")
         return man
 
 class Connective(Enum):
@@ -121,9 +121,11 @@ class Equality:
         return "Equality"
 
 class Token:
-    def __init__(self, t, v):
+    def __init__(self, t, v, lptr, rptr):
         self.t = t
         self.v = v
+        self.lptr = lptr
+        self.rptr = rptr
 
     def __str__(self):
         return "[{}: {}]".format(self.t, self.v)
@@ -132,6 +134,7 @@ class Tokeniser:
     def __init__(self, man):
         self.man = man
         self.toks = []
+
 
     def tokenise(self):
         lptr = 0
@@ -182,11 +185,11 @@ class Tokeniser:
                     t = Connective(self.man.conns[1].index(v))
                 elif v in self.man.quants[1]:
                     t = Quantifier(self.man.quants[1].index(v))
-                self.toks.append(Token(t, v))
+                self.toks.append(Token(t, v, lptr, rptr-1))
                 lptr = rptr
 
             if sym_t is not None:
-                self.toks.append(Token(sym_t, source[rptr]))
+                self.toks.append(Token(sym_t, source[rptr], rptr, rptr))
                 lptr = rptr = rptr + 1
                 sym_t = None
 
@@ -207,58 +210,59 @@ class Rule(Enum):
 def parse_predicate(psr, tree, parent):
     # assume first tok predicate name
     tree.add_node(parent, psr.tok())
-    args = psr.tkr.man.preds[1][psr.tok().v]
+    name = psr.tok().v
+    args = psr.tkr.man.preds[1][name]
 
-    if not psr.next(): pass #err
-    if psr.tok().t != Symbol.LPAREN: pass #err
-    if not psr.next(): pass #err
+    if not psr.next(): psr.err_fatal(psr.tok(), "Unexpected end of formula after predicate name")
+    if psr.tok().t != Symbol.LPAREN: psr.err_fatal(psr.tok(), "Expected left parenthesis, found '{}'".format(psr.tok().v))
+    if not psr.next(): psr.err_fatal(psr.tok(), "Unexpected end of formula instead of predicate arguments")
 
     for i in range(args):
         if psr.tok().t != Name.VAR:
-            pass #err
+            psr.err_fatal(psr.tok(), "Expected variable, found '{}'".format(psr.tok().v))
         tree.add_node(parent, psr.tok())
         if not psr.next():
-            pass #err
+            psr.err_fatal(psr.tok(), "Unexpected end of formula within predicate arguments")
         if i+1 == args:
             if psr.tok().t != Symbol.RPAREN:
-                pass #err
+                psr.err_fatal(psr.tok(), "Expected right parenthesis ({} has {} args), found '{}'".format(name, args, psr.tok().v))
         else:
             if psr.tok().t != Symbol.COMMA:
-                pass #err
+                psr.err_fatal(psr.tok(), "Expected comma ({} has {} args), found '{}'".format(name, args, psr.tok().v))
             if not psr.next():
-                pass #err
+                psr.err_fatal(psr.tok(), "Unexpected end of formula within predicate arguments")
 
 
 def parse_equality(psr, tree, parent):
     if psr.tok().t == Name.VAR or psr.tok().t == Name.CONST:
         tree.add_node(parent, psr.tok())
     else:
-        pass #err
+        psr.err_fatal(psr.tok(), "Expected variable or constant, found '{}'".format(psr.tok().v))
 
     if not psr.next():
-        pass #err
+        psr.err_fatal(psr.tok(), "Unexpected end of formula while parsing equality expression")
 
     if type(psr.tok().t) != Equality:
-        pass #err
+        psr.err_fatal(psr.tok(), "Expected equality operator, found '{}'".format(psr.tok().v))
 
     if not psr.next():
-        pass #err
+        psr.err_fatal(psr.tok(), "Unexpected end of formula while parsing equality expression")
 
     if psr.tok().t == Name.VAR or psr.tok().t == Name.CONST:
         tree.add_node(parent, psr.tok())
     else:
-        pass #err
+        psr.err_fatal(psr.tok(), "Expected variable or constant, found '{}'".format(psr.tok().v))
 
 def parse_binary(psr, tree, parent):
     parse_formula(psr, tree, parent)
     if not psr.next():
-        pass #err
+        psr.err_fatal(psr.tok(), "Unexpected end of formula while parsing binary expression")
     if psr.tok().t in {Connective.AND, Connective.OR, Connective.IMPL, Connective.IFF}:
         tree.add_node(parent, psr.tok())
     else:
-        pass #err
+        psr.err_fatal(psr.tok(), "Expected binary connective, found '{}'".format(psr.tok()))
     if not psr.next():
-        pass #err
+        psr.err_fatal(psr.tok(), "Unexpected end of formula while parsing binary expression")
     parse_formula(psr, tree, parent)
 
 def parse_parens(psr, tree, parent):
@@ -273,22 +277,22 @@ def parse_parens(psr, tree, parent):
         if psr.next():
             rparen = psr.tok()
             if rparen.t != Symbol.RPAREN:
-                pass #err
+                psr.err_fatal(psr.tok(), "Expected ')', found '{}'".format(rparen.v))
     else:
-        pass #err
+        psr.err_fatal(psr.tok(), "Unexpected end of formula while parsing expression")
 
 def parse_quantify(psr, tree, parent):
     # assuming first tok is quant
     tree.add_node(parent, psr.tok())
     if psr.next():
         if psr.tok().t != Name.VAR:
-            pass #err
+            psr.err_fatal(psr.tok(), "Expected variable, found '{}'".format(psr.tok().v))
         tree.add_node(parent, psr.tok())
         if not psr.next():
-            pass #err
+            psr.err_fatal(psr.tok(), "Unexpected end of formula while parsing quantifier")
         parse_formula(psr, tree, parent)
     else:
-        pass #err
+        psr.err_fatal(psr.tok(), "Unexpected end of formula while parsing quantifier")
 
 
 def parse_negation(psr, tree, parent):
@@ -296,7 +300,7 @@ def parse_negation(psr, tree, parent):
     if psr.next():
         parse_formula(psr, tree, parent)
     else:
-        pass #err
+        psr.err_fatal(psr.tok(), "Unexpected end of formula while parsing negation")
 
 def parse_formula(psr, tree, parent):
     tok = psr.tok()
@@ -312,6 +316,8 @@ def parse_formula(psr, tree, parent):
     elif tok.t == Name.PRED:
         predicate = tree.add_node(parent, Rule.PREDICATE)
         parse_predicate(psr, tree, predicate)
+    else:
+        psr.err_fatal(tok, "Expected formula, found '{}'".format(tok.v))
 
 class Node:
     def __init__(self, nid, nval, parent):
@@ -345,18 +351,29 @@ class Parser:
         self.tkr = tokeniser
         self.tptr = 0
 
+    def err_fatal(self, tok, msg):
+        print("Error: {}".format(msg), file=sys.stderr)
+        if tok:
+            source = self.tkr.man.formula[2]
+            lbuf = tok.lptr
+            rbuf = 20
+            prefix = "   | "
+            if tok.lptr > 20:
+                lbuf = 20
+                prefix = ".... "
+            print(prefix + source[tok.lptr - lbuf : tok.rptr + rbuf].rstrip())
+            print(" " * (5 + lbuf) + "^" * (tok.rptr - tok.lptr + 1))
+        sys.exit(1)
+
     def tok(self):
         return self.tkr.toks[self.tptr]
 
-    def peek(self):
-        return self.tkr.toks[self.tptr+1]
-
     def next(self):
-        self.tptr += 1
-        if self.tptr < len(self.tkr.toks):
+        if self.tptr+1 < len(self.tkr.toks):
+            self.tptr += 1
             return True
         else:
-            return false
+            return False
 
     def parse(self):
         tree = Tree()
@@ -365,7 +382,7 @@ class Parser:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        error(0, "Need a filepath argument")
+        err_fatal(0, "Need a filepath argument")
     path = sys.argv[1]
     man = Manifest.from_file(path)
     tkr = Tokeniser(man)
