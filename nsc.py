@@ -34,6 +34,37 @@ class Manifest:
         out += "-> formula L{}-{}: {}\n".format(*self.formula)
         return out
 
+    def grammar(self):
+        argnums = set()
+        predargs = []
+        for p, v in self.preds[1].items():
+            argnums.add(v)
+            predargs.append("{} args{}".format(p, v))
+
+        argrules = []
+        for n in sorted(argnums):
+            argrules.append(("args{}".format(n), "( " +" , ".join(["variable"] * n) + " ) "))
+
+        productions = [
+            ("formula"   ,  "( parens )", "{} formula".format(self.conns[1][4]), "quantifier variable formula", "predicate"),
+            ("parens"    ,  "formula binary formula", "value {} value".format(self.eq[1])),
+            ("predicate" ,  *predargs),
+            *argrules,
+            ("binary"    ,  *self.conns[1][0:3]),
+            ("value"     ,  "constant", "variable"),
+            ("constant"  ,  *self.consts[1]),
+            ("variable"  ,  *self.vars[1]),
+            ("quantifier",  *self.quants[1])
+        ]
+
+        rside = max(len(p[0]) for p in productions)
+
+        for prod in productions:
+            print("{:<{rs}} -> {}".format(prod[0], prod[1], rs=rside))
+            for additional in prod[2:]:
+                print(" " * rside + "  | " + additional)
+            print()
+
     @classmethod
     def from_file(cls, path):
         def chunk(rval, lno, msg, also=""):
@@ -215,7 +246,7 @@ class Tokeniser:
                 elif v in self.man.quants[1]:
                     t = Quantifier(self.man.quants[1].index(v))
                 else:
-                    err_fatal(0, "No such identifier ''".format(v))
+                    err_fatal(0, "No such identifier '{}'".format(v))
                 self.toks.append(Token(t, v, lptr, rptr-1))
                 lptr = rptr
 
@@ -420,6 +451,7 @@ if __name__ == "__main__":
         misc_fatal("Need a filepath argument")
     path = sys.argv[1]
     man = Manifest.from_file(path)
+    man.grammar()
     tkr = Tokeniser(man)
     tkr.tokenise()
     psr = Parser(tkr)
