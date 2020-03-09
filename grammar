@@ -1,0 +1,11 @@
+formula   -> parens | unary formula | quant var formula | predexpr
+parens    -> (formula binary formula) | (value = value)
+predexpr  -> predicate ( var args
+args      -> , var args | )
+predicate -> {PRED, PRED....}
+binary    -> CONJUNCT | DISJUNCT | IMPLIC | BICONDITIONAL
+unary     -> NEGATION
+value     -> const | var
+const     -> {CONST, CONST...}
+var       -> {VAR, VAR...}
+quant     -> FORALL | FOREACH
