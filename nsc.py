@@ -1,13 +1,15 @@
 from enum import Enum
 import sys
 
-sys.stderr = sys.stdout
+def misc_fatal(msg):
+    print("Error: {}".format(msg), file=sys.stderr)
+    sys.exit(1)
 
 def err_fatal(lno, msg):
     if not lno:
-        print("Error: {}".format(msg), file=sys.stderr)
+        print("Syntax Error: {}".format(msg), file=sys.stderr)
     else:
-        print("Error (line {}): {}".format(lno, msg), file=sys.stderr)
+        print("Syntax Error (line {}): {}".format(lno, msg), file=sys.stderr)
     sys.exit(1)
 
 class Manifest:
@@ -51,67 +53,70 @@ class Manifest:
         expect = {"variables", "constants", "predicates", "equality",
                   "connectives", "quantifiers", "formula"}
         seen = set()
-        with open(path) as inf:
-            exp_form = False
-            for lind, line in enumerate(inf):
-                lno = lind + 1
-                parts = line.split(":", 1)
-                if len(parts) != 1:
-                    if exp_form:
-                        man.formula[1] = lno-1
-                    exp_form = False
-                    lval, rval = parts
+        try:
+            with open(path) as inf:
+                exp_form = False
+                for lind, line in enumerate(inf):
+                    lno = lind + 1
+                    parts = line.split(":", 1)
+                    if len(parts) != 1:
+                        if exp_form:
+                            man.formula[1] = lno-1
+                        exp_form = False
+                        lval, rval = parts
 
-                    if lval in seen:
-                        err_fatal(lno, "Duplicate label name")
+                        if lval in seen:
+                            err_fatal(lno, "Duplicate label name")
 
-                    seen.add(lval)
-                    if lval == "variables":
-                        man.vars = (lno, chunk(rval, lno, "'{}' is not a valid variable name"))
-                    elif lval == "constants":
-                        man.consts = (lno, chunk(rval, lno, "'{}' is not a valid variable name"))
-                    elif lval == "predicates":
-                        preds = {}
-                        for spec in rval.strip().split(" "):
-                            pname = None
-                            bptr = -1
-                            for i, c in enumerate(spec):
-                                if pname is not None and bptr == -1:
-                                    if c == ']':
-                                        err_fatal(lno, "Predicate definition '{}' has no arity specified".format(pname))
-                                    bptr = i
-                                if c == '[':
-                                    pname = spec[:i]
-                                    if not all(c.isalnum() or c == "_" for c in pname):
-                                        err_fatal(lno, "'{}' is not a valid predicate name".format(pname))
-                            if c != ']':
-                                err_fatal(lno, "Predicate definition did not conclude with ']'")
-                            if bptr != -1:
-                                try:
-                                    preds[pname] = int(spec[bptr:-1])
-                                    if preds[pname] < 0:
-                                        err_fatal(lno, "Predicate definition arity is not positive")
-                                except ValueError:
-                                    err_fatal(lno, "Predicate definition arity is not an integer")
-                        man.preds = (lno, preds)
-                    elif lval == "equality":
-                        eq = rval.strip()
-                        if not all(c.isalnum() or c in "_=\\" for c in eq):
-                            err_fatal(lno, "'{}' is not a valid equality symbol".format(eq))
-                        man.eq = (lno, rval.strip())
-                    elif lval == "connectives":
-                        man.conns = (lno, chunk(rval, lno, "'{}' is not a valid connective name", also="\\"))
-                    elif lval == "quantifiers":
-                        man.quants = (lno, chunk(rval, lno, "'{}' is not a valid quantifier name", also="\\"))
-                    elif lval == "formula":
-                        man.formula = [lno, -1, rval]
-                        exp_form = True
+                        seen.add(lval)
+                        if lval == "variables":
+                            man.vars = (lno, chunk(rval, lno, "'{}' is not a valid variable name"))
+                        elif lval == "constants":
+                            man.consts = (lno, chunk(rval, lno, "'{}' is not a valid variable name"))
+                        elif lval == "predicates":
+                            preds = {}
+                            for spec in rval.strip().split(" "):
+                                pname = None
+                                bptr = -1
+                                for i, c in enumerate(spec):
+                                    if pname is not None and bptr == -1:
+                                        if c == ']':
+                                            err_fatal(lno, "Predicate definition '{}' has no arity specified".format(pname))
+                                        bptr = i
+                                    if c == '[':
+                                        pname = spec[:i]
+                                        if not all(c.isalnum() or c == "_" for c in pname):
+                                            err_fatal(lno, "'{}' is not a valid predicate name".format(pname))
+                                if c != ']':
+                                    err_fatal(lno, "Predicate definition did not conclude with ']'")
+                                if bptr != -1:
+                                    try:
+                                        preds[pname] = int(spec[bptr:-1])
+                                        if preds[pname] < 0:
+                                            err_fatal(lno, "Predicate definition arity is not positive")
+                                    except ValueError:
+                                        err_fatal(lno, "Predicate definition arity is not an integer")
+                            man.preds = (lno, preds)
+                        elif lval == "equality":
+                            eq = rval.strip()
+                            if not all(c.isalnum() or c in "_=\\" for c in eq):
+                                err_fatal(lno, "'{}' is not a valid equality symbol".format(eq))
+                            man.eq = (lno, rval.strip())
+                        elif lval == "connectives":
+                            man.conns = (lno, chunk(rval, lno, "'{}' is not a valid connective name", also="\\"))
+                        elif lval == "quantifiers":
+                            man.quants = (lno, chunk(rval, lno, "'{}' is not a valid quantifier name", also="\\"))
+                        elif lval == "formula":
+                            man.formula = [lno, -1, rval]
+                            exp_form = True
+                        else:
+                            err_fatal(lno, "Unrecognised label name")
+                    elif exp_form:
+                        man.formula[2] += line
                     else:
-                        err_fatal(lno, "Unrecognised label name")
-                elif exp_form:
-                    man.formula[2] += line
-                else:
-                    err_fatal(lno, "Unrecognised input syntax")
+                        err_fatal(lno, "Unrecognised input syntax")
+        except FileNotFoundError:
+            misc_fatal("No such input file")
         if exp_form:
             man.formula[1] = lno
         if seen != expect:
@@ -380,7 +385,7 @@ class Parser:
         self.tptr = 0
 
     def err_fatal(self, tok, msg):
-        print("Error: {}".format(msg), file=sys.stderr)
+        print("Parse Error: {}".format(msg), file=sys.stderr)
         if tok:
             source = self.tkr.man.formula[2]
             lbuf = tok.lptr
@@ -389,8 +394,8 @@ class Parser:
             if tok.lptr > 20:
                 lbuf = 20
                 prefix = ".... "
-            print(prefix + source[tok.lptr - lbuf : tok.rptr + rbuf].rstrip())
-            print(" " * (5 + lbuf) + "^" * (tok.rptr - tok.lptr + 1))
+            print(prefix + source[tok.lptr - lbuf : tok.rptr + rbuf].rstrip(), file=sys.stderr)
+            print(" " * (5 + lbuf) + "^" * (tok.rptr - tok.lptr + 1), file=sys.stderr)
         sys.exit(1)
 
     def tok(self):
@@ -412,7 +417,7 @@ class Parser:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        err_fatal(0, "Need a filepath argument")
+        misc_fatal("Need a filepath argument")
     path = sys.argv[1]
     man = Manifest.from_file(path)
     tkr = Tokeniser(man)
