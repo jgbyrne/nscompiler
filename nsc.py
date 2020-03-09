@@ -34,8 +34,18 @@ class Manifest:
 
     @classmethod
     def from_file(cls, path):
-        def chunk(rval):
-            return rval.strip().split(" ")
+        def chunk(rval, lno, msg, also=""):
+            items = rval.strip().split(" ")
+            for item in items:
+                for c in item:
+                    if c.isalnum():
+                        continue
+                    if c == '_':
+                        continue
+                    if c not in also:
+                        err_fatal(lno, msg.format(item))
+            return items
+
 
         man = cls(path)
         expect = {"variables", "constants", "predicates", "equality",
@@ -57,12 +67,12 @@ class Manifest:
 
                     seen.add(lval)
                     if lval == "variables":
-                        man.vars = (lno, chunk(rval))
+                        man.vars = (lno, chunk(rval, lno, "'{}' is not a valid variable name"))
                     elif lval == "constants":
-                        man.consts = (lno, chunk(rval))
+                        man.consts = (lno, chunk(rval, lno, "'{}' is not a valid variable name"))
                     elif lval == "predicates":
                         preds = {}
-                        for spec in chunk(rval):
+                        for spec in rval.strip().split(" "):
                             pname = None
                             bptr = -1
                             for i, c in enumerate(spec):
@@ -72,6 +82,8 @@ class Manifest:
                                     bptr = i
                                 if c == '[':
                                     pname = spec[:i]
+                                    if not all(c.isalnum() or c == "_" for c in pname):
+                                        err_fatal(lno, "'{}' is not a valid predicate name".format(pname))
                             if c != ']':
                                 err_fatal(lno, "Predicate definition did not conclude with ']'")
                             if bptr != -1:
@@ -83,11 +95,14 @@ class Manifest:
                                     err_fatal(lno, "Predicate definition arity is not an integer")
                         man.preds = (lno, preds)
                     elif lval == "equality":
+                        eq = rval.strip()
+                        if not all(c.isalnum() or c in "_=\\" for c in eq):
+                            err_fatal(lno, "'{}' is not a valid equality symbol".format(eq))
                         man.eq = (lno, rval.strip())
                     elif lval == "connectives":
-                        man.conns = (lno, chunk(rval))
+                        man.conns = (lno, chunk(rval, lno, "'{}' is not a valid connective name", also="\\"))
                     elif lval == "quantifiers":
-                        man.quants = (lno, chunk(rval))
+                        man.quants = (lno, chunk(rval, lno, "'{}' is not a valid quantifier name", also="\\"))
                     elif lval == "formula":
                         man.formula = [lno, -1, rval]
                         exp_form = True
@@ -271,7 +286,7 @@ def parse_binary(psr, tree, parent):
     if psr.tok().t in {Connective.AND, Connective.OR, Connective.IMPL, Connective.IFF}:
         tree.add_node(parent, psr.tok())
     else:
-        psr.err_fatal(psr.tok(), "Expected binary connective, found '{}'".format(psr.tok()))
+        psr.err_fatal(psr.tok(), "Expected binary connective, found '{}'".format(psr.tok().v))
     if not psr.next():
         psr.err_fatal(psr.tok(), "Unexpected end of formula while parsing binary expression")
     parse_formula(psr, tree, parent)
@@ -289,8 +304,10 @@ def parse_parens(psr, tree, parent):
             rparen = psr.tok()
             if rparen.t != Symbol.RPAREN:
                 psr.err_fatal(psr.tok(), "Expected ')', found '{}'".format(rparen.v))
+        else:
+            psr.err_fatal(psr.tok(), "Unexpected end of formula while looking for closing parenthesis")
     else:
-        psr.err_fatal(psr.tok(), "Unexpected end of formula while parsing expression")
+        psr.err_fatal(psr.tok(), "Unexpected end of formula while beginning to parse expression")
 
 def parse_quantify(psr, tree, parent):
     # assuming first tok is quant
@@ -389,6 +406,8 @@ class Parser:
     def parse(self):
         tree = Tree()
         parse_formula(self, tree, 0)
+        if self.next():
+            self.err_fatal(self.tok(), "Finished parsing but did not reach end of formula")
         return tree
 
 if __name__ == "__main__":
