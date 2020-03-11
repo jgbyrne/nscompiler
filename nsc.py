@@ -2,20 +2,39 @@ from enum import Enum
 import sys
 import networkx as nx
 import matplotlib.pyplot as plt
+import os
 
-def misc_fatal(msg):
-    print("Error: {}".format(msg), file=sys.stderr)
-    sys.exit(1)
+class Logger:
+    def __init__(self, job, log_path):
+        self.job = job
+        self.log_path = log_path
+        with open(self.log_path, 'w') as lf:
+            print("[nsc] Compiling '{}'...\n".format(job), file=lf)
 
-def err_fatal(lno, msg):
-    if not lno:
-        print("Syntax Error: {}".format(msg), file=sys.stderr)
-    else:
-        print("Syntax Error (line {}): {}".format(lno, msg), file=sys.stderr)
-    sys.exit(1)
+    def fatal(self, msg):
+        with open(self.log_path, 'a') as lf:
+            print(msg, file=lf)
+            print("[nsc] Compilation failed for '{}'".format(self.job), file=lf)
+        sys.exit(1)
+
+    def success(self, msg):
+        with open(self.log_path, 'a') as lf:
+            print(msg, file=lf)
+            print("[nsc] Compilation succeeded for '{}'".format(self.job), file=lf)
+        sys.exit(0)
+
+    def misc_fatal(self, msg):
+        self.fatal("Error: {}".format(msg))
+
+    def err_fatal(self, lno, msg):
+        if not lno:
+            self.fatal("Syntax Error: {}".format(msg))
+        else:
+            self.fatal("Syntax Error (line {}): {}".format(lno, msg))
 
 class Manifest:
-    def __init__(self, job):
+    def __init__(self, log, job):
+        self.log = log
         self.job = job
         self.vars    = (-1, [])
         self.consts  = (-1, [])
@@ -36,39 +55,47 @@ class Manifest:
         out += "-> formula L{}-{}: {}\n".format(*self.formula)
         return out
 
-    def grammar(self):
+    def grammar(self, outf):
         argnums = set()
         predargs = []
         for p, v in self.preds[1].items():
             argnums.add(v)
-            predargs.append("{} args{}".format(p, v))
+            predargs.append("{} <args{}>".format(p, v))
 
         argrules = []
         for n in sorted(argnums):
-            argrules.append(("args{}".format(n), "( " +" , ".join(["variable"] * n) + " ) "))
+            argrules.append(("<args{}>".format(n), "( " +" , ".join(["<variable>"] * n) + " ) "))
 
         productions = [
-            ("formula"   ,  "( parens )", "{} formula".format(self.conns[1][4]), "quantifier variable formula", "predicate"),
-            ("parens"    ,  "formula binary formula", "value {} value".format(self.eq[1])),
-            ("predicate" ,  *predargs),
+            ("<formula>"   ,  "( <parens> )", "{} <formula>".format(self.conns[1][4]), "<quantifier> <variable> <formula>", "<predicate>"),
+            ("<parens>"    ,  "formula binary formula", "value {} value".format(self.eq[1])),
+            ("<predicate>" ,  *predargs),
             *argrules,
-            ("binary"    ,  *self.conns[1][0:3]),
-            ("value"     ,  "constant", "variable"),
-            ("constant"  ,  *self.consts[1]),
-            ("variable"  ,  *self.vars[1]),
-            ("quantifier",  *self.quants[1])
+            ("<binary>"    ,  *self.conns[1][0:3]),
+            ("<value>"     ,  "<constant>", "<variable>"),
+            ("<constant>"  ,  *self.consts[1]),
+            ("<variable>"  ,  *self.vars[1]),
+            ("<quantifier>",  *self.quants[1])
         ]
+
+        print("Symbols\n-------\n", file=outf)
+
+        print("nonterminals :=  {}\n".format("  |  ".join([p[0] for p in productions])), file=outf)
+        print("terminals    := {}\n".format("  |  ".join([" ( ", " , ", " ) "] + self.vars[1] + self.consts[1] +
+                                                        self.conns[1] +  [self.eq[1]] + self.quants[1])), file=outf)
+
+        print("Production Rules\n----------------\n", file=outf)
 
         rside = max(len(p[0]) for p in productions)
 
         for prod in productions:
-            print("{:<{rs}} -> {}".format(prod[0], prod[1], rs=rside))
+            print("{:<{rs}} -> {}".format(prod[0], prod[1], rs=rside), file=outf)
             for additional in prod[2:]:
-                print(" " * rside + "  | " + additional)
-            print()
+                print(" " * rside + "  | " + additional, file=outf)
+            print("", file=outf)
 
     @classmethod
-    def from_file(cls, path):
+    def from_file(cls, log, path):
         def chunk(rval, lno, msg, also=""):
             items = rval.strip().split(" ")
             for item in items:
@@ -78,11 +105,11 @@ class Manifest:
                     if c == '_':
                         continue
                     if c not in also:
-                        err_fatal(lno, msg.format(item))
+                        log.err_fatal(lno, msg.format(item))
             return items
 
 
-        man = cls(path)
+        man = cls(log, path)
         expect = {"variables", "constants", "predicates", "equality",
                   "connectives", "quantifiers", "formula"}
         seen = set()
@@ -99,7 +126,7 @@ class Manifest:
                         lval, rval = parts
 
                         if lval in seen:
-                            err_fatal(lno, "Duplicate label name")
+                            log.err_fatal(lno, "Duplicate label name")
 
                         seen.add(lval)
                         if lval == "variables":
@@ -114,26 +141,26 @@ class Manifest:
                                 for i, c in enumerate(spec):
                                     if pname is not None and bptr == -1:
                                         if c == ']':
-                                            err_fatal(lno, "Predicate definition '{}' has no arity specified".format(pname))
+                                            log.err_fatal(lno, "Predicate definition '{}' has no arity specified".format(pname))
                                         bptr = i
                                     if c == '[':
                                         pname = spec[:i]
                                         if not all(c.isalnum() or c == "_" for c in pname):
-                                            err_fatal(lno, "'{}' is not a valid predicate name".format(pname))
+                                            log.err_fatal(lno, "'{}' is not a valid predicate name".format(pname))
                                 if c != ']':
-                                    err_fatal(lno, "Predicate definition did not conclude with ']'")
+                                    log.err_fatal(lno, "Predicate definition did not conclude with ']'")
                                 if bptr != -1:
                                     try:
                                         preds[pname] = int(spec[bptr:-1])
                                         if preds[pname] < 0:
-                                            err_fatal(lno, "Predicate definition arity is not positive")
-                                    except ValueError:
-                                        err_fatal(lno, "Predicate definition arity is not an integer")
+                                            log.err_fatal(lno, "Predicate definition arity is not positive")
+                                    except Valuelog.error:
+                                        log.err_fatal(lno, "Predicate definition arity is not an integer")
                             man.preds = (lno, preds)
                         elif lval == "equality":
                             eq = rval.strip()
                             if not all(c.isalnum() or c in "_=\\" for c in eq):
-                                err_fatal(lno, "'{}' is not a valid equality symbol".format(eq))
+                                log.err_fatal(lno, "'{}' is not a valid equality symbol".format(eq))
                             man.eq = (lno, rval.strip())
                         elif lval == "connectives":
                             man.conns = (lno, chunk(rval, lno, "'{}' is not a valid connective name", also="\\"))
@@ -143,17 +170,17 @@ class Manifest:
                             man.formula = [lno, -1, rval]
                             exp_form = True
                         else:
-                            err_fatal(lno, "Unrecognised label name")
+                            log.err_fatal(lno, "Unrecognised label name")
                     elif exp_form:
                         man.formula[2] += line
                     else:
-                        err_fatal(lno, "Unrecognised input syntax")
-        except FileNotFoundError:
-            misc_fatal("No such input file")
+                        log.err_fatal(lno, "Unrecognised input syntax")
+        except FileNotFoundlog.error:
+            log.misc_fatal("No such input file")
         if exp_form:
             man.formula[1] = lno
         if seen != expect:
-            err_fatal(0, "Did not see expected label set")
+            log.err_fatal(0, "Did not see expected label set")
         return man
 
 class Connective(Enum):
@@ -192,10 +219,10 @@ class Token:
         return "[{}: {}]".format(self.t, self.v)
 
 class Tokeniser:
-    def __init__(self, man):
+    def __init__(self, log, man):
+        self.log = log
         self.man = man
         self.toks = []
-
 
     def tokenise(self):
         lptr = 0
@@ -231,7 +258,7 @@ class Tokeniser:
                     rptr += 1
                     continue
                 else:
-                    err_fatal(0, "'{}' is not a valid character in any identifier".format(c))
+                    self.log.err_fatal(0, "'{}' is not a valid character in any identifier".format(c))
 
             if lptr != rptr:
                 v = source[lptr:rptr]
@@ -248,7 +275,7 @@ class Tokeniser:
                 elif v in self.man.quants[1]:
                     t = Quantifier(self.man.quants[1].index(v))
                 else:
-                    err_fatal(0, "No such identifier '{}'".format(v))
+                    self.log.err_fatal(0, "No such identifier '{}'".format(v))
                 self.toks.append(Token(t, v, lptr, rptr-1))
                 lptr = rptr
 
@@ -434,12 +461,13 @@ class Tree:
 
 
 class Parser:
-    def __init__(self, tokeniser):
+    def __init__(self, log, tokeniser):
+        self.log = log
         self.tkr = tokeniser
         self.tptr = 0
 
     def err_fatal(self, tok, msg):
-        print("Parse Error: {}".format(msg), file=sys.stderr)
+        s = "Parse Error: {}".format(msg) + "\n"
         if tok:
             source = self.tkr.man.formula[2]
             lbuf = tok.lptr
@@ -448,9 +476,9 @@ class Parser:
             if tok.lptr > 20:
                 lbuf = 20
                 prefix = ".... "
-            print(prefix + source[tok.lptr - lbuf : tok.rptr + rbuf].rstrip(), file=sys.stderr)
-            print(" " * (5 + lbuf) + "^" * (tok.rptr - tok.lptr + 1), file=sys.stderr)
-        sys.exit(1)
+            s += prefix + source[tok.lptr - lbuf : tok.rptr + rbuf].rstrip() + "\n"
+            s += " " * (5 + lbuf) + "^" * (tok.rptr - tok.lptr + 1)
+        self.log.fatal(s)
 
     def tok(self):
         return self.tkr.toks[self.tptr]
@@ -469,148 +497,184 @@ class Parser:
             self.err_fatal(self.tok(), "Finished parsing but did not reach end of formula")
         return tree
 
-def fetch_label(node):
-    if type(node.nval) == Token:
-        term = node.nval
-        if term.t == Name.PRED:
-            return "Pred\n{}".format(term.v)
-        if term.t == Name.VAR:
-            return "Var\n{}".format(term.v)
-        if term.t == Name.CONST:
-            return "Const\n{}".format(term.v)
+class AST:
+    @staticmethod
+    def fetch_label(log, node):
+        if type(node.nval) == Token:
+            term = node.nval
+            if term.t == Name.PRED:
+                return "Pred\n{}".format(term.v)
+            if term.t == Name.VAR:
+                return "Var\n{}".format(term.v)
+            if term.t == Name.CONST:
+                return "Const\n{}".format(term.v)
 
-        if term.t == Connective.AND:
-            return "∧"
-        if term.t == Connective.OR:
-            return "∨"
-        if term.t == Connective.IFF:
-            return "↔"
-        if term.t == Connective.IMPL:
-            return "→"
+            if term.t == Connective.AND:
+                return "∧"
+            if term.t == Connective.OR:
+                return "∨"
+            if term.t == Connective.IFF:
+                return "↔"
+            if term.t == Connective.IMPL:
+                return "→"
 
-        if term.t == Quantifier.FORALL:
-            return "∀"
+            if term.t == Quantifier.FORALL:
+                return "∀"
 
-        if term.t == Quantifier.EXISTS:
-            return "∃"
+            if term.t == Quantifier.EXISTS:
+                return "∃"
 
-    else:
-        misc_fatal("Internal Compiler Error: Found {} instead of Token while building AST".format(node.nval))
+        else:
+            log.misc_fatal("Internal Compiler Error: Found {} instead of Token while building AST".format(node.nval))
+
+    @staticmethod
+    def build_ast(log, ptree, ast, pn):
+        if pn.nval == Rule.QUANTIFY:
+            c = ptree.children(pn.nid)
+            q = ast.add_orphan(AST.fetch_label(log, c[0]))
+            ast.add_child(q, ast.add_orphan(AST.fetch_label(log, c[1])))
+            ast.add_child(q, AST.build_ast(log, ptree, ast, c[2]))
+            return q
+
+        if pn.nval == Rule.PARENS:
+            return AST.build_ast(log, ptree, ast, ptree.children(pn.nid)[0])
+
+        if pn.nval == Rule.EQUALITY:
+            c = ptree.children(pn.nid)
+            eq = ast.add_orphan("=")
+            ast.add_child(eq, ast.add_orphan(AST.fetch_label(log, c[0])))
+            ast.add_child(eq, ast.add_orphan(AST.fetch_label(log, c[1])))
+            return eq
+
+        if pn.nval == Rule.BINARY:
+            c = ptree.children(pn.nid)
+            bn = ast.add_orphan(AST.fetch_label(log, c[1]))
+            ast.add_child(bn, AST.build_ast(log, ptree, ast, c[0]))
+            ast.add_child(bn, AST.build_ast(log, ptree, ast, c[2]))
+            return bn
+
+        if pn.nval == Rule.NEGATION:
+            c = ptree.children(pn.nid)[0]
+            neg = ast.add_orphan("¬")
+            ast.add_child(neg, AST.build_ast(log, ptree, ast, c))
+            return neg
+
+        if pn.nval == Rule.PREDICATE:
+            c = ptree.children(pn.nid)
+            p = ast.add_orphan(AST.fetch_label(log, c[0]))
+            for child in c[1:]:
+                ast.add_child(p, ast.add_orphan(AST.fetch_label(log, child)))
+            return p
+
+        log.misc_fatal("Internal Compiler Error: Found {} instead of Rule".format(pn.nval))
+
+    def __init__(self, log, ast):
+        self.log = log
+        self.ast = ast
+
+    @classmethod
+    def from_parse_tree(cls, log, ptree):
+        ast = Tree()
+        top = ptree.children(ptree.root().nid)[0]
+        ast_top = cls.build_ast(log, ptree, ast, top)
+        ast.link_root(ast_top)
+        return cls(log, ast)
+
+    def _count_depths(self, node, depth):
+        count = {depth: 1}
+        for child in self.ast.children(node.nid):
+            for d, c in self._count_depths(child, depth+1).items():
+                if d not in count:
+                    count[d] = c
+                else:
+                    count[d] += c
+        node.depth = depth
+        node.count = count
+        return count
+
+    def write_image(self, ast_path):
+        top = self.ast.children(self.ast.root().nid)[0]
+        self._count_depths(top, 1)
+        dmax = max(top.count.keys()) + 1
+        graph = nx.Graph()
+        graph.add_nodes_from(list(n.nid for n in self.ast.nodes if n.nid))
+        pos = {top.nid: [0.5, dmax - 1]}
+        root_hpos = []
+        top.lfence = 0
+        top.rfence = 1
+        buf = [top]
+        while buf:
+            node = buf.pop()
+            if node.nid and node.parent:
+                graph.add_edge(node.nid, node.parent)
+            lane = max(node.count.values())
+            cursor = 0
+            slices = {}
+            for child in self.ast.children(node.nid):
+                clane = max(child.count.values())
+                slices[child] = clane / lane
+            pie = sum(slices.values())
+            nchunk = node.rfence - node.lfence
+
+            for child, lslice in slices.items():
+                chunk = lslice / pie
+                hpos = node.lfence + (cursor + (chunk * .5)) * nchunk
+                if node.nid == top.nid:
+                    root_hpos.append(hpos)
+                pos[child.nid] = [hpos, dmax - child.depth]
+                child.lfence = node.lfence + (cursor * nchunk)
+                child.rfence = node.lfence + ((cursor + chunk) * nchunk)
+                cursor += chunk
+                buf.append(child)
+        pos[top.nid][0] = sum(root_hpos) / len(root_hpos)
+        plt.figure(1, figsize=(2*max(top.count.values()),dmax * 1.3))
+        nx.draw_networkx_nodes(graph, pos, node_shape="s", node_size=1500, node_color="#dd8888")
+        nx.draw_networkx_edges(graph, pos)
+        nx.draw_networkx_labels(graph, pos, {n.nid: n.nval for n in self.ast.nodes if n.nid})
+
+        plt.savefig(ast_path)
+
+# Main Routine
+
+def main():
+    if len(sys.argv) < 2:
+        print("Need a filepath argument", file=sys.stderr)
+        sys.exit(2)
+
+    path = sys.argv[1]
+    prefix = os.path.splitext(path)[0]
+
+    # Initialise the program Logger
+    log_file = prefix  + "-log.txt"
+    log = Logger(path, log_file)
+
+    # Initialise the compilation Manifest
+    # This performs a cursory parse of the input file
+    man = Manifest.from_file(log, path)
+
+    # Write the language grammar out to a file
+    grammar_path = prefix + "-grammar.txt"
+    with open(grammar_path, 'w') as f:
+        man.grammar(f)
+
+    # Tokenise the formula from the Manifest
+    tkr = Tokeniser(log, man)
+    tkr.tokenise()
+
+    # Parse the Token stream
+    psr = Parser(log, tkr)
+    tree = psr.parse()
+
+    # Convert the Parse Tree into an AST
+    ast = AST.from_parse_tree(log, tree)
+
+    # Write the AST to an image file
+    ast_path = prefix + "-ast.png"
+    ast.write_image(ast_path)
+
+    log.success("Completed job, outputting to {} and {}".format(grammar_path, ast_path))
 
 
-def build_ast(ptree, ast, pn):
-    if pn.nval == Rule.QUANTIFY:
-        c = ptree.children(pn.nid)
-        q = ast.add_orphan(fetch_label(c[0]))
-        ast.add_child(q, ast.add_orphan(fetch_label(c[1])))
-        ast.add_child(q, build_ast(ptree, ast, c[2]))
-        return q
-
-    if pn.nval == Rule.PARENS:
-        return build_ast(ptree, ast, ptree.children(pn.nid)[0])
-
-    if pn.nval == Rule.EQUALITY:
-        c = ptree.children(pn.nid)
-        eq = ast.add_orphan("=")
-        ast.add_child(eq, ast.add_orphan(fetch_label(c[0])))
-        ast.add_child(eq, ast.add_orphan(fetch_label(c[1])))
-        return eq
-
-    if pn.nval == Rule.BINARY:
-        c = ptree.children(pn.nid)
-        bn = ast.add_orphan(fetch_label(c[1]))
-        ast.add_child(bn, build_ast(ptree, ast, c[0]))
-        ast.add_child(bn, build_ast(ptree, ast, c[2]))
-        return bn
-
-    if pn.nval == Rule.NEGATION:
-        c = ptree.children(pn.nid)[0]
-        neg = ast.add_orphan("¬")
-        ast.add_child(neg, build_ast(ptree, ast, c))
-        return neg
-
-    if pn.nval == Rule.PREDICATE:
-        c = ptree.children(pn.nid)
-        p = ast.add_orphan(fetch_label(c[0]))
-        for child in c[1:]:
-            ast.add_child(p, ast.add_orphan(fetch_label(child)))
-        return p
-
-    misc_fatal("Internal Compiler Error: Found {} instead of Rule".format(pn.nval))
-
-
-def into_ast(ptree):
-    ast = Tree()
-    top = ptree.children(ptree.root().nid)[0]
-    ast_top = build_ast(ptree, ast, top)
-    ast.link_root(ast_top)
-    return ast
-
-def count_depths(ast, node, depth):
-    count = {depth: 1}
-    for child in ast.children(node.nid):
-        for d, c in count_depths(ast, child, depth+1).items():
-            if d not in count:
-                count[d] = c
-            else:
-                count[d] += c
-    node.depth = depth
-    node.count = count
-    return count
-
-def into_image(ast):
-    top = ast.children(ast.root().nid)[0]
-    count_depths(ast, top, 1)
-    dmax = max(top.count.keys()) + 1
-    graph = nx.Graph()
-    graph.add_nodes_from(list(n.nid for n in ast.nodes if n.nid))
-    pos = {top.nid: [0.5, dmax - 1]}
-    root_hpos = []
-    top.lfence = 0
-    top.rfence = 1
-    buf = [top]
-    while buf:
-        node = buf.pop()
-        if node.nid and node.parent:
-            graph.add_edge(node.nid, node.parent)
-        lane = max(node.count.values())
-        cursor = 0
-        slices = {}
-        for child in ast.children(node.nid):
-            clane = max(child.count.values())
-            slices[child] = clane / lane
-        pie = sum(slices.values())
-        nchunk = node.rfence - node.lfence
-
-        for child, lslice in slices.items():
-            chunk = lslice / pie
-            hpos = node.lfence + (cursor + (chunk * .5)) * nchunk
-            if node.nid == top.nid:
-                root_hpos.append(hpos)
-            pos[child.nid] = [hpos, dmax - child.depth]
-            child.lfence = node.lfence + (cursor * nchunk)
-            child.rfence = node.lfence + ((cursor + chunk) * nchunk)
-            cursor += chunk
-            buf.append(child)
-    pos[top.nid][0] = sum(root_hpos) / len(root_hpos)
-    plt.figure(1, figsize=(2*max(top.count.values()),dmax * 1.3))
-    nx.draw_networkx_nodes(graph, pos, node_shape="s", node_size=1500, node_color="#dd8888")
-    nx.draw_networkx_edges(graph, pos)
-    nx.draw_networkx_labels(graph, pos, {n.nid: n.nval for n in ast.nodes if n.nid})
-
-    plt.savefig("graph.png")
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        misc_fatal("Need a filepath argument")
-    path = sys.argv[1]
-    man = Manifest.from_file(path)
-    man.grammar()
-    tkr = Tokeniser(man)
-    tkr.tokenise()
-    psr = Parser(tkr)
-    tree = psr.parse()
-    ast = into_ast(tree)
-    into_image(ast)
-    print("Parsed Successfully")
-
+    main()
