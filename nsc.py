@@ -1,5 +1,7 @@
 from enum import Enum
 import sys
+import networkx as nx
+import matplotlib.pyplot as plt
 
 def misc_fatal(msg):
     print("Error: {}".format(msg), file=sys.stderr)
@@ -400,6 +402,27 @@ class Tree:
         self.nodes[parent].children.append(nid)
         return nid
 
+    def add_orphan(self, nval):
+        nid = len(self.nodes)
+        self.nodes.append(Node(nid, nval, -1))
+        return nid
+
+    def add_child(self, nid, cid):
+        self.nodes[nid].children.append(cid)
+        self.nodes[cid].parent = nid
+
+    def link_root(self, nid):
+        self.add_child(0, nid)
+
+    def root(self):
+        return self.nodes[0]
+
+    def get_node(self, nid):
+        return self.nodes[nid]
+
+    def children(self, nid):
+        return [self.nodes[cnid] for cnid in self.nodes[nid].children]
+
     def _cat_node(self, nid, depth):
         s = "{} ({}) {}\n".format("  "*depth, nid, self.nodes[nid].nval)
         for cnid in self.nodes[nid].children:
@@ -446,6 +469,137 @@ class Parser:
             self.err_fatal(self.tok(), "Finished parsing but did not reach end of formula")
         return tree
 
+def fetch_label(node):
+    if type(node.nval) == Token:
+        term = node.nval
+        if term.t == Name.PRED:
+            return "Pred\n{}".format(term.v)
+        if term.t == Name.VAR:
+            return "Var\n{}".format(term.v)
+        if term.t == Name.CONST:
+            return "Const\n{}".format(term.v)
+
+        if term.t == Connective.AND:
+            return "∧"
+        if term.t == Connective.OR:
+            return "∨"
+        if term.t == Connective.IFF:
+            return "↔"
+        if term.t == Connective.IMPL:
+            return "→"
+
+        if term.t == Quantifier.FORALL:
+            return "∀"
+
+        if term.t == Quantifier.EXISTS:
+            return "∃"
+
+    else:
+        misc_fatal("Internal Compiler Error: Found {} instead of Token while building AST".format(node.nval))
+
+
+def build_ast(ptree, ast, pn):
+    if pn.nval == Rule.QUANTIFY:
+        c = ptree.children(pn.nid)
+        q = ast.add_orphan(fetch_label(c[0]))
+        ast.add_child(q, ast.add_orphan(fetch_label(c[1])))
+        ast.add_child(q, build_ast(ptree, ast, c[2]))
+        return q
+
+    if pn.nval == Rule.PARENS:
+        return build_ast(ptree, ast, ptree.children(pn.nid)[0])
+
+    if pn.nval == Rule.EQUALITY:
+        c = ptree.children(pn.nid)
+        eq = ast.add_orphan("=")
+        ast.add_child(eq, ast.add_orphan(fetch_label(c[0])))
+        ast.add_child(eq, ast.add_orphan(fetch_label(c[1])))
+        return eq
+
+    if pn.nval == Rule.BINARY:
+        c = ptree.children(pn.nid)
+        bn = ast.add_orphan(fetch_label(c[1]))
+        ast.add_child(bn, build_ast(ptree, ast, c[0]))
+        ast.add_child(bn, build_ast(ptree, ast, c[2]))
+        return bn
+
+    if pn.nval == Rule.NEGATION:
+        c = ptree.children(pn.nid)[0]
+        neg = ast.add_orphan("¬")
+        ast.add_child(neg, build_ast(ptree, ast, c))
+        return neg
+
+    if pn.nval == Rule.PREDICATE:
+        c = ptree.children(pn.nid)
+        p = ast.add_orphan(fetch_label(c[0]))
+        for child in c[1:]:
+            ast.add_child(p, ast.add_orphan(fetch_label(child)))
+        return p
+
+    misc_fatal("Internal Compiler Error: Found {} instead of Rule".format(pn.nval))
+
+
+def into_ast(ptree):
+    ast = Tree()
+    top = ptree.children(ptree.root().nid)[0]
+    ast_top = build_ast(ptree, ast, top)
+    ast.link_root(ast_top)
+    return ast
+
+def count_depths(ast, node, depth):
+    count = {depth: 1}
+    for child in ast.children(node.nid):
+        for d, c in count_depths(ast, child, depth+1).items():
+            if d not in count:
+                count[d] = c
+            else:
+                count[d] += c
+    node.depth = depth
+    node.count = count
+    return count
+
+def into_image(ast):
+    top = ast.children(ast.root().nid)[0]
+    count_depths(ast, top, 1)
+    dmax = max(top.count.keys()) + 1
+    graph = nx.Graph()
+    graph.add_nodes_from(list(n.nid for n in ast.nodes if n.nid))
+    pos = {top.nid: [0.5, dmax - 1]}
+    root_hpos = []
+    top.lfence = 0
+    top.rfence = 1
+    buf = [top]
+    while buf:
+        node = buf.pop()
+        if node.nid and node.parent:
+            graph.add_edge(node.nid, node.parent)
+        lane = max(node.count.values())
+        cursor = 0
+        slices = {}
+        for child in ast.children(node.nid):
+            clane = max(child.count.values())
+            slices[child] = clane / lane
+        pie = sum(slices.values())
+        nchunk = node.rfence - node.lfence
+
+        for child, lslice in slices.items():
+            chunk = lslice / pie
+            hpos = node.lfence + (cursor + (chunk * .5)) * nchunk
+            if node.nid == top.nid:
+                root_hpos.append(hpos)
+            pos[child.nid] = [hpos, dmax - child.depth]
+            child.lfence = node.lfence + (cursor * nchunk)
+            child.rfence = node.lfence + ((cursor + chunk) * nchunk)
+            cursor += chunk
+            buf.append(child)
+    pos[top.nid][0] = sum(root_hpos) / len(root_hpos)
+    plt.figure(1, figsize=(2*max(top.count.values()),dmax * 1.3))
+    nx.draw_networkx_nodes(graph, pos, node_shape="s", node_size=1500, node_color="#dd8888")
+    nx.draw_networkx_edges(graph, pos)
+    nx.draw_networkx_labels(graph, pos, {n.nid: n.nval for n in ast.nodes if n.nid})
+
+    plt.savefig("graph.png")
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         misc_fatal("Need a filepath argument")
@@ -456,5 +610,7 @@ if __name__ == "__main__":
     tkr.tokenise()
     psr = Parser(tkr)
     tree = psr.parse()
+    ast = into_ast(tree)
+    into_image(ast)
     print("Parsed Successfully")
 
